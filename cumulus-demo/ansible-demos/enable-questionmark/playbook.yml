@@ -1,0 +1,13 @@
+---
+  #Setup Play1: Configure spine & leaf switches
+  - name: Enable questionmark autocomplete
+    hosts: spines:leafs
+    become: yes
+
+    tasks:
+    #Task 1: Change .inputrc file to enable questionmark auto complete
+      - name: Change .inputrc file to enable questionmark auto complete
+        lineinfile: 
+          dest: /home/cumulus/.inputrc 
+          regexp: '#\s*?:\s*complete.*$'
+          line: ' ?: complete'  

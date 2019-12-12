@@ -1,0 +1,124 @@
+---
+  #Setup Play1: Configure spine switches
+  - name: configure spine01
+    hosts: spine01
+    become: yes
+    vars_files:
+      - vars.yml
+    tasks:
+    #Task 1: Configure BGP parameters on spine switches
+    - name: configure spine01 for BGP Unnumbered (BGP config)
+      nclu:
+        commands:
+        - add loopback lo ip address {{ devices[ansible_hostname].loopback }}
+        - add bgp autonomous-system {{ devices[ansible_hostname].as }}
+        commit: true
+    
+    #Task 2: Configure BGP neighbors and enable BGP unnumbered on the interfaces to the leafs
+    - name: Configure bgp neighbors
+      nclu:
+        commands:
+        - add bgp neighbor {{ item }} interface remote-as external
+        - add bgp neighbor {{ item }} capability extended-nexthop
+        commit: true
+      #with_items creates a list from the variables mentiond in the vars.yml file and will parse the list with the commands above. If there a 4 values in the list the commands will run 4 times
+      with_items: "{{ devices[ansible_hostname].leaf_ports }}"
+
+    #Task 3: Announce loopbacks in BGP
+    - name: Announce loopbacks in BGP
+      nclu: 
+        commands:
+        - add routing route-map allow-loopback permit 10 match interface lo
+        - add routing route-map allow-loopback permit 10 set origin igp
+        - add routing route-map allow-loopback deny 20
+        - add bgp redistribute connected route-map allow-loopback
+        commit: true
+  
+  
+  #Setup Play2: Configure leaf switches
+  - name: configure Leafs
+    hosts: leaf01:leaf03
+    become: yes
+    vars_files:
+    - vars.yml
+      
+    tasks:
+      #Task1: Configure BGP parameters on leaf switch
+      - name: configure leafs for BGP Unnumbered (BGP config)
+        nclu:
+          commands:
+          - add loopback lo ip address {{ devices[ansible_hostname].loopback }}
+          - add bgp autonomous-system {{ devices[ansible_hostname].as }}
+          commit: true
+  
+      #Task 2: Configure BGP neighbors and enable BGP unnumbered on the interfaces to the spine
+      - name: Configure bgp neighbors
+        nclu:
+          commands:
+          - add bgp neighbor {{ item }} interface remote-as external
+          - add bgp neighbor {{ item }} capability extended-nexthop
+          commit: true
+        #with_items creates a list from the variables mentiond in the vars.yml file and will parse the list with the commands above. If there a 4 values in the list the commands will run 4 times
+        with_items: "{{ devices[ansible_hostname].spine_ports }}"
+      
+      #Task 3: Configure a vlan on leaf switches with 1 access port for the connected server
+      - name: Configure vlan, svi and access port for servers
+        nclu:
+          commands:
+          - add vlan {{ devices[ansible_hostname].vlan }} ip address {{ devices[ansible_hostname].vlan_ip }}
+          - add interface {{ devices[ansible_hostname].server_port }} bridge access {{ devices[ansible_hostname].vlan }}
+          commit: true
+      #Task 4: Announce the connected network (Network to the server) in BGP
+      - name: Announce local network into BGP
+        nclu:
+          commands:
+          - add bgp network {{ devices[ansible_hostname].bgp_network }}
+          commit: true
+
+      #Task 5: Announce loopbacks in BGP
+      - name: Announce loopbacks in BGP
+        nclu: 
+          commands:
+          - add routing route-map allow-loopback permit 10 match interface lo
+          - add routing route-map allow-loopback permit 10 set origin igp
+          - add routing route-map allow-loopback deny 20
+          - add bgp redistribute connected route-map allow-loopback
+          commit: true
+  
+  #Setup Play4: Configure the servers for the demo
+  - name: configure servers
+    hosts: server01:server03
+    become: yes
+    vars_files:
+    - vars.yml
+  
+    tasks:
+      #Task 1: Add config to the /etc/network/interfaces file
+      - name: Add interfaces config to servers
+        blockinfile:
+          path: "/etc/network/interfaces"
+          insertafter: "iface eth0 inet dhcp"
+          block: |
+            auto eth1
+            iface eth1 inet static
+              address {{ devices[ansible_hostname].ip }}
+      
+      #Task 2: Enables eth1 with new config from task 1
+      - name: ifup eth1 on servers
+        command: ifup eth1
+      
+      #Task 3: Get routing table from device and store in variable
+      - name: Get routing table from device and store in variable
+        command: ip route
+        register: routingtable #Register output of the command ip route in a variable routingtabel
+
+      #Task4: Creates temporary static route for 192.168.0.0/16 prefix to attached leaf switch. This is needed because the server learns te default route over the mgmt network
+      - name: Add static route to server
+        command: ip route add 192.168.0.0/16 via {{ devices[ansible_hostname].gateway }}
+        #Only run the tasks when the string 192.168.0.0/16 is not in the routingtables variable. When the string is present skip the task
+        when: "'192.168.0.0/16' | string not in routingtable.stdout"
+            
+  
+  
+  
+  
